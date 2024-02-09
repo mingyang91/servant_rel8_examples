@@ -1,0 +1,18 @@
+cradle:
+  multi:
+    - path: "./test"
+      config:
+        cradle:
+          stack:
+    - path: "./src"
+      config:
+        cradle:
+          stack:
+    - path: "./app/Main.hs"
+      config:
+        cradle:
+          stack:
+    - path: "./"  # Fallback for all other files
+      config:
+        cradle:
+          stack:

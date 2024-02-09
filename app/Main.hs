@@ -3,18 +3,22 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 module Main (main) where
 
 
-import           Data.Has
+import           Data.Aeson
 import           Data.ByteString.Char8 (pack, ByteString)
+import           Data.Has
+import           Data.String.Conversions (cs)
+import           Data.Time.Clock (DiffTime)
 import           Control.Exception ( bracket )
 import           Control.Monad.IO.Class (liftIO)
 import           Control.Monad.Reader
+import qualified Control.Monad.IO.Class
+import           Control.Monad (void, (<=<))
 
-import           Data.Aeson
-import           Data.Time.Clock (DiffTime)
 import           GHC.Generics
 import           Network.Wai
 import           Network.Wai.Handler.Warp
@@ -22,15 +26,11 @@ import           Servant
 import qualified Servant
 import           System.IO
 
-import           Lib ( someFunc, authorSchema, getAuthorById )
-import qualified Hasql.Connection
-import           Hasql.Pool ( Pool, use, acquire, release )
-import           Hasql.Session ( Session, sql )
-import qualified Rel8
-import           Control.Monad (void, (<=<))
-import           Distribution.Compat.Binary (Binary(put))
-import qualified Control.Monad.IO.Class
-import qualified Rel8
+import           Lib ( someFunc, authorSchema, DBM, AuthorService(getAuthorById, listAuthors), AuthorView(AuthorView), ProjectView(ProjectView) )
+import           Hasql.Pool ( Pool, acquire, release )
+import           Control.Monad.Trans.Except (runExceptT)
+import           Control.Monad.Except (ExceptT, MonadError)
+import           Data.Int (Int64)
 
 
 -- * api
@@ -38,10 +38,13 @@ import qualified Rel8
 type ItemApi =
   "item" :> Get '[JSON] [Item] :<|>
   "item" :> Capture "itemId" Integer :> Get '[JSON] Item :<|>
-  "author" :> Get '[JSON] [Author] :<|>
-  "author" :> Capture "authorId" Integer :> Get '[JSON] Author :<|>
-  "project" :> Get '[JSON] [Project] :<|>
-  "project" :> Capture "projectId" Integer :> Get '[JSON] Project
+  "author" :> Get '[JSON] [AuthorView] :<|>
+  "author" :> Capture "authorId" Integer :> Get '[JSON] AuthorView :<|>
+  "project" :> Get '[JSON] [ProjectView] :<|>
+  "project" :> Capture "projectId" Integer :> Get '[JSON] ProjectView
+
+type ItemApi2 =
+  "author" :> Capture "authorId" Int64 :> Get '[JSON] AuthorView
 
 itemApi :: Proxy ItemApi
 itemApi = Proxy
@@ -90,7 +93,7 @@ server pool =
   getItems :<|>
   getItemById :<|>
   getAuthors :<|>
-  getAuthorByIdFromDB :<|>
+  mockGetAuthorById :<|>
   getProjects :<|>
   getProjectById
 
@@ -105,8 +108,13 @@ getItemById = \ case
 exampleItem :: Item
 exampleItem = Item 0 "example item"
 
-getAuthors :: Handler [Author]
+getAuthors :: Handler [AuthorView]
 getAuthors = return [exampleAuthor]
+
+mockGetAuthorById :: Integer -> Handler AuthorView
+mockGetAuthorById = \ case
+  0 -> return exampleAuthor
+  _ -> throwError err404
 
 -- Handler but tagless final style, connection
 -- getAuthorsFromDb :: (MonadReader m r, Has Session r, MonadIO m) => m [Author]
@@ -114,23 +122,38 @@ getAuthors = return [exampleAuthor]
 --   pool <- ask
 --   return [exampleAuthor]
 
-getAuthorByIdFromDB :: Integer -> Handler Author
-getAuthorByIdFromDB aid = return exampleAuthor
+  -- maybeAuthor <- test2 aid
+  -- case maybeAuthor of
+  --   Just author -> return author
+  --   Nothing -> throwError err404
 
 
-exampleAuthor :: Author
-exampleAuthor = Author 0 "example author"
+getAuthorByIdFromDB :: AuthorService m => Int64 -> m AuthorView
+getAuthorByIdFromDB aid = undefined
+-- do
+--   maybeAuthorView <- getAuthorById aid
+--   return $ case maybeAuthorView of
+--     Just authorView -> authorView
+--     Nothing -> throwError err404 { errBody = cs "Author not found" }
 
-getProjects :: Handler [Project]
+
+server2 :: AuthorService m => ServerT ItemApi2 m
+server2 = getAuthorByIdFromDB
+
+
+exampleAuthor :: AuthorView
+exampleAuthor = AuthorView 0 (cs "example author") (Just $ cs "example url")
+
+getProjects :: Handler [ProjectView]
 getProjects = return [exampleProject]
 
-getProjectById :: Integer -> Handler Project
+getProjectById :: Integer -> Handler ProjectView
 getProjectById = \ case
   0 -> return exampleProject
   _ -> throwError err404
 
-exampleProject :: Project
-exampleProject = Project 0 "example project"
+exampleProject :: ProjectView
+exampleProject = ProjectView 0 "example project"
 
 -- * item
 
@@ -143,24 +166,3 @@ data Item
 
 instance ToJSON Item
 instance FromJSON Item
-
-data Author
-  = Author {
-    authorId :: Integer,
-    authorName :: String
-  }
-  deriving (Eq, Show, Generic)
-
-instance ToJSON Author
-instance FromJSON Author
-
-data Project
-  = Project {
-    projectId :: Integer,
-    projectName :: String
-  }
-  deriving (Eq, Show, Generic)
-
-instance ToJSON Project
-instance FromJSON Project
-

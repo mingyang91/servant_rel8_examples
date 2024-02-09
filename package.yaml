@@ -26,6 +26,7 @@ dependencies:
 - mtl
 - transformers
 - transformers-either
+- string-conversions
 - data-has
 - hasql
 - hasql-pool

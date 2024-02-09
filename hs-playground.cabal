@@ -47,6 +47,7 @@ library
     , servant-auth
     , servant-auth-server
     , servant-server
+    , string-conversions
     , text
     , time
     , transformers
@@ -79,6 +80,7 @@ executable hs-playground-exe
     , servant-auth
     , servant-auth-server
     , servant-server
+    , string-conversions
     , text
     , time
     , transformers
@@ -112,6 +114,7 @@ test-suite hs-playground-test
     , servant-auth
     , servant-auth-server
     , servant-server
+    , string-conversions
     , text
     , time
     , transformers

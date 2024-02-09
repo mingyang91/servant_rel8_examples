@@ -17,7 +17,10 @@ module Lib
     ( someFunc
     , authorSchema
     , projectSchema
-    , getAuthorById
+    , DBM
+    , AuthorView(..)
+    , ProjectView(..)
+    , AuthorService(..)
     ) where
 
 
@@ -38,6 +41,7 @@ import Hasql.Connection (Connection)
 import qualified Hasql.Pool as Pool
 import qualified Rel8
 import qualified Hasql.Statement
+import Data.Aeson.Types (ToJSON, FromJSON)
 
 someFunc :: IO ()
 someFunc = putStrLn "someFunc"
@@ -87,18 +91,21 @@ findAuthorById aid = limit 1 $ do
   pure author
 
 data AuthorView = AuthorView
-  { authorViewId   :: AuthorId
+  { authorViewId   :: Int64
   , authorViewName :: Text
   , authorViewUrl  :: Maybe Text
   }
-  deriving stock (Generic)
+  deriving stock (Eq, Show, Generic)
+
+instance ToJSON AuthorView
+instance FromJSON AuthorView
 
 newtype DBM a = DBM {
   runSessionM :: EitherT Pool.UsageError (ReaderT Pool IO) a
 } deriving newtype (Monad, Applicative, Functor, MonadIO, MonadReader Pool)
 
 class Monad m => AuthorService m where
-  getAuthorById :: AuthorId -> m (Maybe AuthorView)
+  getAuthorById :: Int64 -> m (Maybe AuthorView)
   listAuthors :: m [AuthorView]
 
 projectsForAuthor a = each projectSchema >>= Rel8.filter \p ->
@@ -114,10 +121,10 @@ fetchAuthorById :: Pool -> AuthorId -> IO (Either Pool.UsageError (Maybe (Author
 fetchAuthorById pool aid = Pool.use pool $ Session.statement () (Rel8.runMaybe (Rel8.select $ findAuthorById aid))
 
 instance AuthorService DBM where
-  getAuthorById :: AuthorId -> DBM (Maybe AuthorView)
+  getAuthorById :: Int64 -> DBM (Maybe AuthorView)
   getAuthorById aid = DBM $ do
     pool <- ask
-    result <- lift . liftIO $ fetchAuthorById pool aid
+    result <- lift . liftIO $ fetchAuthorById pool $ AuthorId aid
     case result of
       Left err -> do
         lift . liftIO $ putStrLn $ "Error querying database: " ++ show err
@@ -136,16 +143,19 @@ instance AuthorService DBM where
 
 authorToAuthorView :: (f ~ Result) => Author f -> AuthorView
 authorToAuthorView author = AuthorView
-  { authorViewId = authorId author
+  { authorViewId = toInt64 $ authorId author
   , authorViewName = authorName author
   , authorViewUrl = authorUrl author
   }
 
 data ProjectView = ProjectView
-  { projectViewAuthorId :: AuthorId
-  , projectViewName     :: Text
+  { projectViewAuthorId :: Int64
+  , projectViewName     :: String
   }
   deriving stock (Generic)
+
+instance ToJSON ProjectView
+instance FromJSON ProjectView
 
 class Monad m => ProjectService m where
   getProjectById :: AuthorId -> m (Maybe ProjectView)

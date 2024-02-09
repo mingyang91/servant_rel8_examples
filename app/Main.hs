@@ -4,33 +4,43 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE InstanceSigs #-}
 
 module Main (main) where
 
 
 import           Data.Aeson
 import           Data.ByteString.Char8 (pack, ByteString)
-import           Data.Has
 import           Data.String.Conversions (cs)
 import           Data.Time.Clock (DiffTime)
 import           Control.Exception ( bracket )
-import           Control.Monad.IO.Class (liftIO)
 import           Control.Monad.Reader
-import qualified Control.Monad.IO.Class
-import           Control.Monad (void, (<=<))
+import           Control.Monad ((<=<))
+import           Control.Monad.Trans.Except (runExceptT, ExceptT (ExceptT), mapExcept, withExceptT, mapExceptT)
+import           Control.Monad.Except (ExceptT, MonadError)
+import           Control.Monad.Trans.Reader as TReader
 
 import           GHC.Generics
 import           Network.Wai
 import           Network.Wai.Handler.Warp
 import           Servant
-import qualified Servant
 import           System.IO
-
-import           Lib ( someFunc, authorSchema, DBM, AuthorService(getAuthorById, listAuthors), AuthorView(AuthorView), ProjectView(ProjectView) )
 import           Hasql.Pool ( Pool, acquire, release )
-import           Control.Monad.Trans.Except (runExceptT)
-import           Control.Monad.Except (ExceptT, MonadError)
 import           Data.Int (Int64)
+import qualified Hasql.Pool as Pool
+import           Lib ( someFunc
+                     , authorSchema
+                     , DBM (runDatabaseM)
+                     , AuthorService( getAuthorById
+                                    , listAuthors
+                                    )
+                     , AuthorView(AuthorView)
+                     , ProjectView(ProjectView)
+                     , runDatabaseM
+                     )
+import GHC.Base (liftM)
 
 
 -- * api
@@ -57,18 +67,6 @@ main = do
         setBeforeMainLoop (hPutStrLn stderr ("listening on port " ++ show port)) $
         defaultSettings
   withPool (runSettings settings <=< mkApp)
-
--- connectToDb = do
-
---   _ <- bracket (either (error . show) return =<< acquire (pack "postgresql://postgres@localhost/postgres")) release \conn -> void do
---     flip run conn $ do
---       sql "CREATE EXTENSION citext"
---       sql "CREATE TABLE test_table ( column1 text not null, column2 bool not null )"
---       sql "CREATE TABLE unique_table ( \"key\" text not null unique, \"value\" text not null )"
---       sql "CREATE SEQUENCE test_seq"
---       sql "CREATE TYPE composite AS (\"bool\" bool, \"char\" char, \"array\" int4[])"
-
---   return ""
 
 
 mkApp :: Pool -> IO Application
@@ -127,19 +125,24 @@ mockGetAuthorById = \ case
   --   Just author -> return author
   --   Nothing -> throwError err404
 
+newtype AppM a = AppM {
+  runAppM ::  ExceptT Servant.ServerError (ReaderT Pool IO) a
+} deriving newtype (Monad, Applicative, Functor, MonadIO, MonadReader Pool)
 
-getAuthorByIdFromDB :: AuthorService m => Int64 -> m AuthorView
-getAuthorByIdFromDB aid = undefined
--- do
---   maybeAuthorView <- getAuthorById aid
---   return $ case maybeAuthorView of
---     Just authorView -> authorView
---     Nothing -> throwError err404 { errBody = cs "Author not found" }
+class Monad m => AppService m where
+  getAuthorByIdHandler :: Int64 -> m AuthorView
 
+instance AppService AppM where
+  getAuthorByIdHandler :: Int64 -> AppM AuthorView
+  getAuthorByIdHandler aid = AppM $ mapErrorToServerError $ runDatabaseM $ getAuthorById aid
 
-server2 :: AuthorService m => ServerT ItemApi2 m
-server2 = getAuthorByIdFromDB
+mapErrorToServerError :: ExceptT Pool.UsageError (ReaderT Pool IO) (Maybe b) -> ExceptT ServerError (ReaderT Pool IO) b
+mapErrorToServerError = mapExceptT $ fmap $ either 
+  (\err -> Left err500 { errBody = cs ("Internal Server Error" ++ show err) }) $
+  maybe (Left err404 { errBody = cs "Author not found" }) Right
 
+server2 :: AppService m => ServerT ItemApi2 m
+server2 = getAuthorByIdHandler
 
 exampleAuthor :: AuthorView
 exampleAuthor = AuthorView 0 (cs "example author") (Just $ cs "example url")

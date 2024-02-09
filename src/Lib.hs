@@ -17,7 +17,7 @@ module Lib
     ( someFunc
     , authorSchema
     , projectSchema
-    , DBM
+    , DBM(..)
     , AuthorView(..)
     , ProjectView(..)
     , AuthorService(..)
@@ -42,6 +42,7 @@ import qualified Hasql.Pool as Pool
 import qualified Rel8
 import qualified Hasql.Statement
 import Data.Aeson.Types (ToJSON, FromJSON)
+import Control.Monad.Trans.Except (ExceptT)
 
 someFunc :: IO ()
 someFunc = putStrLn "someFunc"
@@ -101,7 +102,7 @@ instance ToJSON AuthorView
 instance FromJSON AuthorView
 
 newtype DBM a = DBM {
-  runSessionM :: EitherT Pool.UsageError (ReaderT Pool IO) a
+  runDatabaseM :: ExceptT Pool.UsageError (ReaderT Pool IO) a
 } deriving newtype (Monad, Applicative, Functor, MonadIO, MonadReader Pool)
 
 class Monad m => AuthorService m where

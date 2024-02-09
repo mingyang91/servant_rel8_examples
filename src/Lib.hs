@@ -11,12 +11,19 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 
 
 module Lib
     ( someFunc
     , authorSchema
     , projectSchema
+    , DBCtx(..)
+    , HasDBPool(..)
     , DBM(..)
     , AuthorView(..)
     , ProjectView(..)
@@ -30,12 +37,12 @@ import           GHC.Generics
 import           Data.Int(Int64)
 import           Data.Text(Text)
 import Control.Monad.IO.Class (MonadIO)
-import Control.Monad.Reader (ReaderT, ask, MonadIO (liftIO))
+import Control.Monad.Reader (ReaderT, ask, asks, MonadIO (liftIO))
 import Control.Monad.Trans.Either (EitherT, left, right)
 import Control.Monad.Trans.Class (lift)
 import Hasql.Session (Session)
 import qualified Hasql.Session as Session
-import Control.Monad.Reader.Class (MonadReader)
+import Control.Monad.Reader.Class (MonadReader (local))
 import Hasql.Pool (Pool, use)
 import Hasql.Connection (Connection)
 import qualified Hasql.Pool as Pool
@@ -43,6 +50,7 @@ import qualified Rel8
 import qualified Hasql.Statement
 import Data.Aeson.Types (ToJSON, FromJSON)
 import Control.Monad.Trans.Except (ExceptT)
+import Data.Has
 
 someFunc :: IO ()
 someFunc = putStrLn "someFunc"
@@ -101,13 +109,32 @@ data AuthorView = AuthorView
 instance ToJSON AuthorView
 instance FromJSON AuthorView
 
-newtype DBM a = DBM {
-  runDatabaseM :: ExceptT Pool.UsageError (ReaderT Pool IO) a
-} deriving newtype (Monad, Applicative, Functor, MonadIO, MonadReader Pool)
+data DBCtx = DBCtx { _pool :: Pool }
+
+newtype DBM ctx a = DBM {
+  runDatabaseM :: ExceptT Pool.UsageError (ReaderT ctx IO) a
+}
+
+deriving instance MonadReader ctx (DBM ctx)
+deriving instance Applicative (DBM ctx)
+deriving instance Functor (DBM ctx)
+deriving instance Monad (DBM ctx)
+deriving instance MonadIO (DBM ctx)
+
+class HasDBPool ctx where
+  getPool :: ctx -> Pool
+
+instance HasDBPool DBCtx where
+  getPool = _pool
+
+-- instance HasDBPool ctx => Has Pool ctx where 
+--   getter = getPool
+
 
 class Monad m => AuthorService m where
   getAuthorById :: Int64 -> m (Maybe AuthorView)
   listAuthors :: m [AuthorView]
+
 
 projectsForAuthor a = each projectSchema >>= Rel8.filter \p ->
   projectAuthorId p ==. authorId a
@@ -116,15 +143,14 @@ authorsAndProjects = do
   author  <- each authorSchema
   project <- projectsForAuthor author
   return (author, project)
-  where
 
 fetchAuthorById :: Pool -> AuthorId -> IO (Either Pool.UsageError (Maybe (Author Result)))
 fetchAuthorById pool aid = Pool.use pool $ Session.statement () (Rel8.runMaybe (Rel8.select $ findAuthorById aid))
 
-instance AuthorService DBM where
-  getAuthorById :: Int64 -> DBM (Maybe AuthorView)
+instance HasDBPool ctx => AuthorService (DBM ctx) where
+  getAuthorById :: Int64 -> DBM ctx (Maybe AuthorView)
   getAuthorById aid = DBM $ do
-    pool <- ask
+    pool <- asks getPool
     result <- lift . liftIO $ fetchAuthorById pool $ AuthorId aid
     case result of
       Left err -> do
@@ -132,9 +158,9 @@ instance AuthorService DBM where
         return Nothing -- Continue with Nothing on error
       Right maybeAuthor -> return $ fmap authorToAuthorView maybeAuthor
   
-  listAuthors :: DBM [AuthorView]
+  listAuthors :: DBM ctx [AuthorView]
   listAuthors = DBM $ do
-    pool <- ask
+    pool <- asks getPool
     result <- lift . liftIO $ Pool.use pool $ Session.statement () (Rel8.run $ Rel8.select $ Rel8.each authorSchema)
     case result of
       Left err -> do

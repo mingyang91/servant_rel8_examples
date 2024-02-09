@@ -7,6 +7,7 @@
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 
 module Main (main) where
 
@@ -38,9 +39,10 @@ import           Lib ( someFunc
                                     )
                      , AuthorView(AuthorView)
                      , ProjectView(ProjectView)
-                     , runDatabaseM
+                     , runDatabaseM, HasDBPool (..)
                      )
 import GHC.Base (liftM)
+import Data.Has
 
 
 -- * api
@@ -53,11 +55,14 @@ type ItemApi =
   "project" :> Get '[JSON] [ProjectView] :<|>
   "project" :> Capture "projectId" Integer :> Get '[JSON] ProjectView
 
+itemApi :: Proxy ItemApi
+itemApi = Proxy
+
 type ItemApi2 =
   "author" :> Capture "authorId" Int64 :> Get '[JSON] AuthorView
 
-itemApi :: Proxy ItemApi
-itemApi = Proxy
+itemApi2 :: Proxy ItemApi2
+itemApi2 = Proxy
 
 main :: IO ()
 main = do
@@ -68,6 +73,13 @@ main = do
         defaultSettings
   withPool (runSettings settings <=< mkApp)
 
+
+data AppCtx = AppCtx {
+  _pool :: Pool
+}
+
+instance HasDBPool AppCtx where
+  getPool = _pool
 
 mkApp :: Pool -> IO Application
 mkApp pool = return $ serve itemApi $ server pool
@@ -126,8 +138,8 @@ mockGetAuthorById = \ case
   --   Nothing -> throwError err404
 
 newtype AppM a = AppM {
-  runAppM ::  ExceptT Servant.ServerError (ReaderT Pool IO) a
-} deriving newtype (Monad, Applicative, Functor, MonadIO, MonadReader Pool)
+  runAppM :: ExceptT Servant.ServerError (ReaderT AppCtx IO) a
+} deriving newtype (Monad, Applicative, Functor, MonadIO, MonadReader AppCtx)
 
 class Monad m => AppService m where
   getAuthorByIdHandler :: Int64 -> m AuthorView
@@ -136,13 +148,17 @@ instance AppService AppM where
   getAuthorByIdHandler :: Int64 -> AppM AuthorView
   getAuthorByIdHandler aid = AppM $ mapErrorToServerError $ runDatabaseM $ getAuthorById aid
 
-mapErrorToServerError :: ExceptT Pool.UsageError (ReaderT Pool IO) (Maybe b) -> ExceptT ServerError (ReaderT Pool IO) b
-mapErrorToServerError = mapExceptT $ fmap $ either 
+mapErrorToServerError :: ExceptT Pool.UsageError (ReaderT AppCtx IO) (Maybe b) -> ExceptT ServerError (ReaderT AppCtx IO) b
+mapErrorToServerError = mapExceptT $ fmap $ either
   (\err -> Left err500 { errBody = cs ("Internal Server Error" ++ show err) }) $
   maybe (Left err404 { errBody = cs "Author not found" }) Right
 
 server2 :: AppService m => ServerT ItemApi2 m
 server2 = getAuthorByIdHandler
+
+mkApp2 ctx = serveWithContext itemApi2 ctx $
+  hoistServerWithContext itemApi2 (Proxy :: Proxy '[AppCtx])
+  (`runReaderT` ctx) server2
 
 exampleAuthor :: AuthorView
 exampleAuthor = AuthorView 0 (cs "example author") (Just $ cs "example url")

@@ -64,8 +64,8 @@ type ItemApi2 =
 itemApi2 :: Proxy ItemApi2
 itemApi2 = Proxy
 
-main :: IO ()
-main = do
+main' :: IO ()
+main' = do
   let port = 3000
       settings =
         setPort port $
@@ -178,7 +178,8 @@ mkApp2 cfg ctx = serveWithContext itemApi2 cfg $
   hoistServerWithContext itemApi2 (Proxy :: Proxy '[])
   (flip runReaderT ctx . runAppM) server2
 
-main2 = do
+main :: IO ()
+main = do
   let port = 3000
       settings =
         setPort port $

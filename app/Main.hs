@@ -150,13 +150,10 @@ instance AppService AppM where
 
 
 mapError :: HasDBPool ctx => ReaderT ctx (ExceptT Pool.UsageError IO) (Maybe b) -> ReaderT ctx Handler b
-mapError = mapReaderT test3
-
-test1 :: Monad m => ExceptT Pool.UsageError m (Maybe b) -> ExceptT ServerError m b
-test1 = mapExceptT (fmap (either (Left . convertError) handleMaybe))
-
-test3 :: ExceptT Pool.UsageError IO (Maybe a) -> Handler a
-test3 e = Handler $ test1 e
+mapError = mapReaderT $ Handler . mapInner'
+  where
+    mapInner' :: Monad m => ExceptT Pool.UsageError m (Maybe b) -> ExceptT ServerError m b
+    mapInner' = mapExceptT (fmap (either (Left . convertError) handleMaybe))
 
 convertError :: Pool.UsageError -> ServerError
 convertError err = err500 { errBody = cs ("Internal Server Error: " ++ show err) }
@@ -181,17 +178,12 @@ mkApp2 cfg ctx = serveWithContext itemApi2 cfg $
   hoistServerWithContext itemApi2 (Proxy :: Proxy '[])
   (flip runReaderT ctx . runAppM) server2
 
-test = do
+main2 = do
   let port = 3000
       settings =
         setPort port $
-        setBeforeMainLoop (hPutStrLn stderr ("listening on port " ++ show port)) $
-        defaultSettings
-  withPool (\pool -> runSettings settings $ mkApp2 EmptyContext (AppCtx pool))
-
-test2 :: Context '[] -> Pool -> Application
-test2 cfg pool = mkApp2 cfg (AppCtx pool)
-
+        setBeforeMainLoop (hPutStrLn stderr ("listening on port " ++ show port)) defaultSettings
+  withPool (runSettings settings . mkApp2 EmptyContext . AppCtx)
 
 exampleAuthor :: AuthorView
 exampleAuthor = AuthorView 0 (cs "example author") (Just $ cs "example url")

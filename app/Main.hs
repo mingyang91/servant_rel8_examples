@@ -18,7 +18,7 @@ import           Data.String.Conversions (cs)
 import           Data.Time.Clock (DiffTime)
 import           Control.Exception ( bracket )
 import           Control.Monad.Reader
-import           Control.Monad ((<=<))
+import           Control.Monad ((<=<), (>=>))
 import           Control.Monad.Trans.Except (runExceptT, ExceptT (ExceptT), mapExcept, withExceptT, mapExceptT)
 import           Control.Monad.Except (ExceptT, MonadError)
 import           Control.Monad.Trans.Reader as TReader
@@ -138,7 +138,7 @@ mockGetAuthorById = \ case
   --   Nothing -> throwError err404
 
 newtype AppM a = AppM {
-  runAppM :: ExceptT Servant.ServerError (ReaderT AppCtx IO) a
+  runAppM :: ReaderT AppCtx Handler a
 } deriving newtype (Monad, Applicative, Functor, MonadIO, MonadReader AppCtx)
 
 class Monad m => AppService m where
@@ -146,7 +146,27 @@ class Monad m => AppService m where
 
 instance AppService AppM where
   getAuthorByIdHandler :: Int64 -> AppM AuthorView
-  getAuthorByIdHandler aid = AppM $ mapErrorToServerError $ runDatabaseM $ getAuthorById aid
+  getAuthorByIdHandler aid = AppM $ mapError $ runDatabaseM $ getAuthorById aid
+
+
+mapError :: HasDBPool ctx => ReaderT ctx (ExceptT Pool.UsageError IO) (Maybe b) -> ReaderT ctx Handler b
+mapError = mapReaderT test3
+
+test1 :: Monad m => ExceptT Pool.UsageError m (Maybe b) -> ExceptT ServerError m b
+test1 = mapExceptT (fmap (either (Left . convertError) handleMaybe))
+
+test3 :: ExceptT Pool.UsageError IO (Maybe a) -> Handler a
+test3 e = Handler $ test1 e
+
+convertError :: Pool.UsageError -> ServerError
+convertError err = err500 { errBody = cs ("Internal Server Error: " ++ show err) }
+
+handleMaybe :: Maybe b -> Either ServerError b
+handleMaybe = \case
+  Just x -> Right x
+  Nothing -> Left notFoundError
+
+notFoundError = err404 { errBody = cs "Author not found" }
 
 mapErrorToServerError :: ExceptT Pool.UsageError (ReaderT AppCtx IO) (Maybe b) -> ExceptT ServerError (ReaderT AppCtx IO) b
 mapErrorToServerError = mapExceptT $ fmap $ either
@@ -156,9 +176,22 @@ mapErrorToServerError = mapExceptT $ fmap $ either
 server2 :: AppService m => ServerT ItemApi2 m
 server2 = getAuthorByIdHandler
 
-mkApp2 ctx = serveWithContext itemApi2 ctx $
-  hoistServerWithContext itemApi2 (Proxy :: Proxy '[AppCtx])
-  (`runReaderT` ctx) server2
+mkApp2 :: Context '[] -> AppCtx -> Application
+mkApp2 cfg ctx = serveWithContext itemApi2 cfg $
+  hoistServerWithContext itemApi2 (Proxy :: Proxy '[])
+  (flip runReaderT ctx . runAppM) server2
+
+test = do
+  let port = 3000
+      settings =
+        setPort port $
+        setBeforeMainLoop (hPutStrLn stderr ("listening on port " ++ show port)) $
+        defaultSettings
+  withPool (\pool -> runSettings settings $ mkApp2 EmptyContext (AppCtx pool))
+
+test2 :: Context '[] -> Pool -> Application
+test2 cfg pool = mkApp2 cfg (AppCtx pool)
+
 
 exampleAuthor :: AuthorView
 exampleAuthor = AuthorView 0 (cs "example author") (Just $ cs "example url")

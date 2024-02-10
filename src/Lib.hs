@@ -112,7 +112,7 @@ instance FromJSON AuthorView
 data DBCtx = DBCtx { _pool :: Pool }
 
 newtype DBM ctx a = DBM {
-  runDatabaseM :: ExceptT Pool.UsageError (ReaderT ctx IO) a
+  runDatabaseM ::  ReaderT ctx (ExceptT Pool.UsageError IO) a
 }
 
 deriving instance MonadReader ctx (DBM ctx)
